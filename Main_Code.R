@@ -211,7 +211,7 @@ names(cluster_assignment) <- rownames(morphological_data)  # Ensure labels match
 dend <- reorder(dend, wts = cluster_assignment)
 
 # Assign colors to dendrogram branches based on k-means clusters
-dend <- color_branches(dend, k = 6, col = cols[as.character(labels[kmeans_result$cluster])])
+dend <- color_branches(dend, k = 10, col = cols[as.character(labels[kmeans_result$cluster])])
 
 # Plot the dendrogram with colored branches
 plot(dend, main = "Hierarchical Dendrogram Colored by K-means Clusters",
