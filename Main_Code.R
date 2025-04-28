@@ -114,7 +114,7 @@ Status<-"validated"
  
 Cop_data <- data_t2 %>%
   filter(Cruise == "nh1208", 
-         annotation_category %in% c("Salpida"),
+         annotation_category %in% c("Doliolida"),
          annotation_status == Status)
 
 ## Image Processing ####
