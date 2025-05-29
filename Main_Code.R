@@ -1,171 +1,246 @@
-#### 1. Load and Install Required Packages ####
-packages <- c("tidyr", "dplyr", "readr", "stringr", "data.table", "ggplot2", "readxl", 
-              "ggpubr", "gridExtra", "RColorBrewer", "colorspace", "FactoMineR", 
-              "factoextra", "gginnards", "cellWise", "corrplot", "vegan", "morphr", 
-              "purrr", "imager", "ggrepel", "cowplot", "Nmisc", "bestNormalize")
-
-package.check <- lapply(packages, FUN = function(x) {
-  if (!require(x, character.only = TRUE)) {
-    install.packages(x, dependencies = TRUE)
-    library(x, character.only = TRUE)
-  }
-})
-
+# packages:
+# "tidyr", "dplyr", "readr", "stringr", "data.table", "ggplot2", "readxl", 
+# "ggpubr", "gridExtra", "RColorBrewer", "colorspace", "FactoMineR", "factoextra",
+# "gginnards", "cellWise", "corrplot", "vegan", "morphr", "purrr", "imager",
+# "ggrepel", "cowplot", "Nmisc", "bestNormalize"
 
 #### 1. Load Data ####
-#data <-read.table("/Users/rociorodriguez/Desktop/Calanoida data/ecotaxa_export_5421_20241212_2208.tsv", header = TRUE, sep = "\t")
-# Read the data
-data <- read.table("/Users/rociorodriguez/Desktop/export_5421_20250421_1659/ecotaxa_export_5421_20250421_1659.tsv", 
-                   header = TRUE, sep = "\t")
-env_data <- read.csv("/Users/rociorodriguez/Desktop/export_5421_20240919_0518/Environmental_data.csv")
-metadata <- read.csv("/Users/rociorodriguez/Desktop/export_5421_20240919_0518/Final_Samples_Gradients.csv")
 
-#### 2. Data Preprocessing ####
-# Split 'object_id' and calculate Abundance and abundance.m2
-data <- data %>%
-  separate(object_id, c("cruise", "moc", "net", "fraction"), extra = "drop", remove = FALSE) %>%
-  mutate(density = (acq_sub_part / sample_tot_vol),
-         Abundance = (acq_sub_part / sample_tot_vol)* (object_depth_max - object_depth_min))
+# metadata
+download.file(
+  url      = "https://www.dropbox.com/scl/fi/crlvzq8w6gmy0g0okflq5/Final_Samples_Gradients.csv?rlkey=cjfl9n3xgxwm5x2tyk94gpm40&st=1k69598w&dl=1&raw=1",
+  destfile = "/tmp/metadata.csv",
+  method   = "auto"
+)
 
-# Rename columns in environmental data and standardize 'Net' for merging
-env_data <- env_data %>%
-  rename(
-    Temp = `avg..t`,
-    Sal = `avg.sal`,
-    Fluor = `avg.fluor`,
-    O2 = `avg.o2`,
-    Depth_max = `Max.Depth`,
-    Depth_min = `Min.Depth`
-  ) %>%
-  mutate(Net = paste0("n", Net))
+metadata <- readr::read_csv("/tmp/metadata.csv") |>
+  janitor::clean_names() |>
+  dplyr::mutate(
+    cruise = dplyr::case_when(
+      cruise == "New Horizon" ~ "nh1208",
+      cruise == "Oceanus" ~ "oc473",
+      TRUE ~ cruise
+    ),
+    cast = paste0("m", cast)
+  ) |>
+pointblank::expect_col_vals_not_null(vars(cruise, cast))
 
-# Rename and modify columns in metadata for merging
-metadata <- metadata %>%
-  rename(moc = Cast, lat = Latitude, lon = Longitude) %>%
-  mutate(moc = paste0("m", moc),
-         Cruise = ifelse(Cruise == "New Horizon", "nh1208", Cruise))
+# env_data
+download.file(
+  url      = "https://www.dropbox.com/scl/fi/eysmmohpo9fkrya9uleuo/Environmental_data.csv?rlkey=en2jo0uozdm73ta20ko7mee7m&st=946l6s0y&dl=1&raw=1",
+  destfile = "/tmp/env_data.csv",
+  method   = "auto"
+)
 
-#### 3. Rename 'cruise' to 'Cruise' in the main dataset ####
-colnames(data)[colnames(data) == "cruise"] <- "Cruise"
+env_data <- readr::read_csv("/tmp/env_data.csv") |>
+  janitor::clean_names() |>
+  dplyr::mutate(cruise_moc_net = paste(cruise, tow, paste0("n", net), sep = "_")) |>
+  dplyr::select(-cruise, -net)
 
-#### 4. Merge All Dataframes ####
-# Merge environmental data with the main copepod dataset
-data_merged <- data %>%
-  left_join(env_data, by = c("Cruise" = "Cruise", "moc" = "Tow", "net" = "Net")) %>%
-  rename_with(~ gsub("^object_", "", .x))
+# note that `nh1208_m19_n9` and `oc473_m14_n4` are present in the environmental but not ecotaxa data!
 
-# Merge metadata with the transformed copepod + environmental data
-data_full <- merge(data_merged, metadata[, c("moc", "Cruise", "D.N")], 
-                   by = c("moc", "Cruise"), all.x = TRUE)
+# data (corrected dates)
+download.file(
+  url      = "https://www.dropbox.com/scl/fi/anvu2t0zvn9f6skqm6tgy/ecotaxa_export_5421_20250307_2215_rm.tsv?rlkey=qloai0j5lyd79ky05a17tabjx&st=275m9wk2&dl=1&raw=1",
+  destfile = "/tmp/data.tsv",
+  method   = "auto"
+)
 
-#write_csv(data_full, "data_full.csv")
+data <- ecotaxaLoadR::load_eco_taxa(file_path = "/tmp/data.tsv") 
 
-
-
-#### 5. Standardize Environmental Variables ####
-# Standardize selected environmental variables
-data_full[, c("Temp", "Sal", "O2", "Fluor")] <- decostand(data_full[, c("Temp", "Sal", "O2", "Fluor")], method = "standardize")
-
-
-# Select morphological variables for transformation
-morphological_vars <- data_full[, 23:89]  # Adjust indices as per your dataset
-
-# Apply Yeo-Johnson transformation with standardization
-YJ_transformed <- apply(morphological_vars, 2, function(x) yeojohnson(x, standardize = TRUE)$x.t)
-
-# Combine transformed morphological variables back into the dataset
-data_t2 <- data_full %>%
-  select(-one_of(colnames(morphological_vars))) %>%
-  bind_cols(as.data.frame(YJ_transformed))
+data_full <- dplyr::left_join(
+  x  = data,
+  y  = env_data,
+  by = c("cruise_moc_net")
+) |>
+  dplyr::left_join(
+    y  = metadata[, c("cruise", "cast", "d_n")],
+    by = c(
+      "cruise" = "cruise",
+      "moc"    = "cast"
+    )
+  ) |>
+  pointblank::expect_row_count_match(count = nrow(data))
 
 
-# Final dataset `data_transformed` is ready for analysis
+# standardize selected environmental variables
 
-# Create 'Region' column based on station values
-data_t2 <- data_t2 %>%
-  mutate(Region = case_when(
-    # Stations from Cruise "nh1208"
-    Cruise == "nh1208" & Station %in% c(7, 11) ~ "PSAE",
-    Cruise == "nh1208" & Station %in% c(15, 21, 23) ~ "NPPF",
-    Cruise == "nh1208" & Station %in% c(27, 34) ~ "NPTG",
-    
-    # Stations from Cruise "oc473"
-    Cruise == "oc473" & Station %in% c(5, 8) ~ "NASW",
-    Cruise == "oc473" & Station %in% c(13, 21) ~ "GFST",
-    Cruise == "oc473" & Station %in% c(26, 31) ~ "NADR",
-    
-    # Default case
-    TRUE ~ NA_character_
-  ))
-# Subset the data to only include rows where the "annotation_category" column is equal to "Calanoida"
-#Cop_data <- subset(data_t2, annotation_category == "Calanoida" & Cruise =="nh1208")
-# Variables
-Cruise <- "nh1208"
-Taxa <- c("Actinopterygii", "Annelida", "Bryozoa", "Cephalochordata", "Chaetognatha",
-          "Cnidaria<Metazoa", "Hydrozoa", "Siphonophorae", "Amphipoda", "Calanoida", 
-          "Cyclopoida", "Harpacticoida", "Mormonilla", "Decapoda", "Euphausiacea", 
-          "calyptopsis<Euphausiacea", "Ostracoda", "Echinodermata", "Harosa", "Foraminifera",  
-          "Heteropoda", "Mollusca", "Cephalopoda", "Gastropoda<Mollusca", 
-          "Cavoliniidae", "Creseidae", "Gymnosomata", "Limacinidae", "Oikopleura", 
-          "Pseudothecosomata", "Doliolida", "Salpida")
-Status<-"validated"
+env_vars <- c(
+  "avg_t",
+  "avg_sal",
+  "avg_o2",
+  "avg_fluor"
+)
 
-# Filtering the data
- 
-Cop_data <- data_t2 %>%
-  filter(Cruise == "nh1208", 
-         annotation_category %in% c("Doliolida"),
-         annotation_status == Status)
+data_full[, env_vars] <- vegan::decostand(
+  x      = data_full[, env_vars],
+  method = "standardize"
+)
 
-## Image Processing ####
+# apply Yeo-Johnson transformation with standardization
 
-# Add image paths for each data entry
-#images_directory <- "imgs/"
-#Cop_data <- Cop_data %>% mutate(img_path = str_c(images_directory, id, ".jpg"))
-library(corrr)   # For correlation analysis
-library(caret)   # For finding highly correlated variables
-# Subset columns 116 to 182
-df_subset <- Cop_data[, 116:182]
-# Remove columns with NA values
-Cop_data_cleaned <- df_subset[, colSums(is.na(df_subset)) == 0]
-# Convert any factor/character columns to numeric if needed
-# (If they're actually categories, consider whether correlation is meaningful.)
-cols_to_drop <- c("ystart", "bx", "by", "xstart", "angle")
-Cop_data_pruned <- Cop_data_cleaned[
-  , !(names(Cop_data_cleaned) %in% cols_to_drop)
-]
-cor_matrix <- cor(Cop_data_pruned, use = "pairwise.complete.obs")  # Compute correlation matrix
+morphological_vars <- c(
+  "object_area", "object_mean", "object_stddev", "object_mode", "object_min", "object_max", "object_x", "object_y", "object_xm", "object_ym", "object_perim", "object_bx", "object_by", "object_width", "object_height", "object_major", "object_minor", "object_angle", "object_circ", "object_feret", "object_intden", "object_median", "object_skew", "object_kurt", "object_area", "object_xstart", "object_ystart", "object_area_exc", "object_fractal", "object_skelarea", "object_slope", "object_histcum1", "object_histcum2", "object_histcum3", "object_xmg5", "object_ymg5", "object_nb1", "object_nb2", "object_nb3", "object_compentropy", "object_compmean", "object_compslope", "object_compm1", "object_compm2", "object_compm3", "object_symetrieh", "object_symetriev", "object_symetriehc", "object_symetrievc", "object_convperim", "object_convarea", "object_fcons", "object_thickr", "object_tag", "object_esd", "object_elongation", "object_range", "object_meanpos", "object_centroids", "object_cv", "object_sr", "object_perimareaexc", "object_feretareaexc", "object_perimferet", "object_perimmajor", "object_circex", "object_cdexc"
+  )
 
-highly_correlated <- findCorrelation(cor_matrix, cutoff = 0.99, names = TRUE)  # Find highly correlated variables
-selected_morpho_data <- Cop_data[, colnames(morphological_vars) %in% highly_correlated]
-#### 7. Compute Abundance and Prepare for PCA and Clustering ####
-morphological_variables <- c('mean', 'stddev', 'mode', 'min', 'skew', 'sr', 'kurt', 'histcum3', "nb1", 'fcons',
-                             'meanpos', 'height', 'major', 'max', 'perim.', 'width', 'minor', 'xstart', 'ystart',
-                             'cdexc', 'fractal', 'angle', 'circ.', 'symetrieh', 'thickr', 'elongation', 
-                             'perimferet', 'perimmajor')
+YJ_transformed <- apply(
+  data_full[, c(morphological_vars)],
+  2,
+  function(x) bestNormalize::yeojohnson(x, standardize = TRUE)$x.t
+) |>
+  as.data.frame()
 
-morphological_variables <- c("mean", "mode", "min", "max", "angle", "circ.", 
-  "kurt", "fractal", "nb1", "symetrievc", "fcons", 
-  "thickr",  "elongation", "meanpos", "sr", 
-  "feretareaexc", "perimferet", "cdexc",  "major", "stddev")
+data_full <- data_full |>
+  dplyr::select(-tidyselect::all_of(morphological_vars)) |>
+  dplyr::bind_cols(YJ_transformed)
 
+# dataset is ready for analysis
 
-# Multiply morphological data by the square root of Abundance
-morphological_data <-Cop_data[,highly_correlated]
-abundance_sqrt <- sqrt(Cop_data$Abundance)
-weighted_data <- sweep(morphological_data, 1, abundance_sqrt, `*`)
-weighted_data <- weighted_data[, colSums(is.na(weighted_data)) < nrow(weighted_data)]
-weighted_data1<-cbind(Cop_data[, c("depth_max", "Temp", "Sal", 
-                                           "O2", "Fluor",  "CO2","D.N")], weighted_data)
+data_full <- data_full |>
+  dplyr::mutate(
+    region = case_when(
+      cruise == "nh1208" & station %in% c(7, 11) ~ "PSAE",
+      cruise == "nh1208" & station %in% c(15, 21, 23) ~ "NPPF",
+      cruise == "nh1208" & station %in% c(27, 34) ~ "NPTG",
+      cruise == "oc473"  & station %in% c(5, 8) ~ "NASW",
+      cruise == "oc473"  & station %in% c(13, 21) ~ "GFST",
+      cruise == "oc473"  & station %in% c(26, 31) ~ "NADR",
+      TRUE ~ NA_character_
+    )
+  )
+
+# taxa:
+# "Actinopterygii", "Annelida", "Bryozoa", "Cephalochordata", "Chaetognatha",
+# "Cnidaria<Metazoa", "Hydrozoa", "Siphonophorae", "Amphipoda", "Calanoida",
+# "Cyclopoida", "Harpacticoida", "Mormonilla", "Decapoda", "Euphausiacea",
+# "calyptopsis<Euphausiacea", "Ostracoda", "Echinodermata", "Harosa",
+# "Foraminifera", "Heteropoda", "Mollusca", "Cephalopoda",
+# "Gastropoda<Mollusca", "Cavoliniidae", "Creseidae", "Gymnosomata",
+# "Limacinidae", "Oikopleura", "Pseudothecosomata", "Doliolida", "Salpida"
+
+filtered <- data_full |>
+  dplyr::filter(
+    grepl(
+      pattern     = "nh1208",
+      x           = cruise_moc_net,
+      ignore.case = TRUE
+    ),
+    grepl(
+      pattern     = "Calanoida",
+      x           = object_annotation_category,
+      ignore.case = TRUE
+    ),
+    object_annotation_status == "validated"
+  )
+
+## image processing ####
+
+# images_directory <- "imgs/"
+# Cop_data <- Cop_data %>% mutate(img_path = str_c(images_directory, id, ".jpg"))
+
+morphological_drops <- c(
+  "object_ystart",
+  "object_bx",
+  "object_by",
+  "object_xstart",
+  "object_angle"
+)
+
+prune_morpho_columns <- function(
+  df,
+  morph_cols,
+  drop_cols
+) {
+
+  morpho <- df |>
+    dplyr::select(tidyselect::all_of(morph_cols))
+
+  na_cols <- names(morpho)[colSums(is.na(morpho)) > 0]
+
+  if (length(na_cols) > 0) {
+    message(
+      "The following columns were dropped due to NA values: ",
+      paste(na_cols, collapse = ", ")
+    )
+  } else {
+    message("No columns were dropped due to NA values.")
+  }
+
+  morpho <- morpho |>
+    dplyr::select(dplyr::where(~ !any(is.na(.)))) |>
+    dplyr::select(-tidyselect::all_of(drop_cols))
+
+  return(morpho)
+
+}
+
+pruned <- prune_morpho_columns(
+  filtered,
+  morphological_vars,
+  morphological_drops
+  )
+
+# compute correlation matrix
+cor_matrix <- cor(
+  x   = pruned,
+  use = "pairwise.complete.obs"
+  )  
+
+# find highly correlated variables
+highly_correlated_morph_cols <- caret::findCorrelation(
+  x      = cor_matrix,
+  cutoff = 0.99,
+  names  = TRUE
+  )  
+
+# weighting
+highly_correlated_morph_data <- filtered[, highly_correlated_morph_cols]
+
+highly_correlated_cor_matrix <- cor(
+  x = highly_correlated_morph_data,
+  use = "pairwise.complete.obs"
+)
+
+ggcorrplot::ggcorrplot(
+  corr = highly_correlated_cor_matrix,
+  lab  = TRUE,
+  type = "upper"
+)
+
+abundance_sqrt    <- sqrt(filtered$abundance)
+weighted_data     <- sweep(highly_correlated_morph_data, 1, abundance_sqrt, `*`)
+weighted_data     <- weighted_data[, colSums(is.na(weighted_data)) < nrow(weighted_data)]
+weighted_env_cols <- c(env_vars, "object_depth_max", "dic_umol_kg", "d_n") # assume dic_umol_kg ~ CO2
+weighted_data     <- cbind(filtered[, weighted_env_cols], weighted_data)
+
 #### 8. PCA and K-Means Clustering Analysis ####
 # Perform PCA on the weighted morphological data
-#res.pca <- PCA(weighted_data, ncp = 10, graph = FALSE)  # ncp = 10 limits to the first 10 PCs
+#res_pca <- PCA(weighted_data, ncp = 10, graph = FALSE)  # ncp = 10 limits to the first 10 PCs
 
-res.pca <- PCA(weighted_data1, 
-               scale.unit = TRUE, 
-               quanti.sup = 1:6, 
-               quali.sup = 7,
-               graph = FALSE, ncp = 20)
+res_pca <- FactoMineR::PCA(
+  X          = weighted_data,
+  scale.unit = TRUE,
+  quanti.sup = 1:6,
+  quali.sup  = 7,
+  graph      = FALSE,
+  ncp        = 20
+)
+
+pamk_best <- fpc::pamk(
+  data      = highly_correlated_morph_data,
+  criterion = "multiasw",
+  usepam    = FALSE
+)
+
+source("find_optimal_k.R")
+
+result <- find_optimal_k(
+  highly_correlated_morph_data,
+  k_range = 2:15
+)
+
+print(result$plot)
+
 
 # Define calanoida clusters
 #set.seed(123)
@@ -195,7 +270,9 @@ sample_data <- morphological_data[sample(nrow(morphological_data), 20000), ]
 fviz_nbclust(sample_data, kmeans, method = "wss", k.max = 15)
 
 # Perform hierarchical clustering
-distance_matrix <- dist(sample_data)  # Compute Euclidean distance matrix
+# distance_matrix <- dist(sample_data)  # Compute Euclidean distance matrix
+distance_matrix <- parallelDist::parDist(as.matrix(sample_data), threads = parallel::detectCores() - 1)
+
 hclust_result <- hclust(distance_matrix, method = "ward.D2")  # Ward's method for clustering
 # Assign cluster labels to k-means results
 Cop_data$Cluster <- factor(kmeans_result$cluster, labels = labels)
@@ -261,7 +338,7 @@ cols <- c("ST" = "#C6DBEF",  # Most Transparent
 cols <- cols[ordered_clusters]
 
 # **5. PCA Variable Extraction & Processing**
-pca.vars <- rbind(res.pca$var$coord, res.pca$quanti.sup$coord, res.pca$quali.sup$coord) %>% as.data.frame()
+pca.vars <- rbind(res_pca$var$coord, res_pca$quanti.sup$coord, res_pca$quali.sup$coord) %>% as.data.frame()
 
 # Filter important variables
 pca.vars1 <- pca.vars[c("mean", "major", "stddev", "Temp", "Sal", "Fluor", "O2", "depth_max","CO2", "D", "N"), ]
@@ -303,8 +380,8 @@ for (region in unique_regions) {
   
   # Merge PCA scores with region_data
   region_data <- region_data %>% 
-    mutate(Dim.1 = res.pca$ind$coord[rownames(region_data), 1],
-           Dim.2 = res.pca$ind$coord[rownames(region_data), 2])
+    mutate(Dim.1 = res_pca$ind$coord[rownames(region_data), 1],
+           Dim.2 = res_pca$ind$coord[rownames(region_data), 2])
   
   # Remove missing PCA coordinates
   region_data <- region_data %>% drop_na(Dim.1, Dim.2)
@@ -321,8 +398,8 @@ for (region in unique_regions) {
   pca_plot <- ggplot(data = region_data, aes(x = Dim.1, y = Dim.2)) +
     geom_point(aes(fill = Cluster), size=6, stroke=0.3, shape=21) +
     theme_classic() +
-    xlab(paste0("PC1 (", round(res.pca$eig[1, 2], 1), "%)")) +
-    ylab(paste0("PC2 (", round(res.pca$eig[2, 2], 1), "%)")) +
+    xlab(paste0("PC1 (", round(res_pca$eig[1, 2], 1), "%)")) +
+    ylab(paste0("PC2 (", round(res_pca$eig[2, 2], 1), "%)")) +
     scale_fill_manual(values = cols, name = "Clusters") +
     ggtitle(Region_labs[region]) +
     scale_x_continuous(limits = c(-20, 30)) +
@@ -371,10 +448,12 @@ ggsave("PCA_Regions.png", PCA_Regions, width = 20, height = 6, bg="transparent")
 
 #### All regions ####
 # Combine data for all regions
-all_regions_data <- Cop_data %>%
-  mutate(Dim.1 = res.pca$ind$coord[rownames(Cop_data), 1],
-         Dim.2 = res.pca$ind$coord[rownames(Cop_data), 2]) %>%
-  drop_na(Dim.1, Dim.2)
+all_regions_data <- filtered |>
+  dplyr::mutate(
+    Dim.1 = res_pca$ind$coord[rownames(filtered), 1],
+    Dim.2 = res_pca$ind$coord[rownames(filtered), 2]
+  ) |>
+  tidyr::drop_na(Dim.1, Dim.2)
 
 # Environmental and other variables for plotting
 env_vars <- pca.vars1[rownames(pca.vars1) %in% c("Temp", "Sal", "O2", "Fluor", "Depth","CO2", "D", "N"), , drop = FALSE] %>%
@@ -399,8 +478,8 @@ combined_pca_plot <- ggplot(data = all_regions_data, aes(x = Dim.1, y = Dim.2)) 
         panel.grid.minor = element_blank(), #remove minor gridlines
         legend.background = element_rect(fill='transparent'), #transparent legend bg
         legend.box.background = element_rect(fill='transparent'))+
-  xlab(paste0("PC1 (", round(res.pca$eig[1, 2], 1), "%)")) +
-  ylab(paste0("PC2 (", round(res.pca$eig[2, 2], 1), "%)")) +
+  xlab(paste0("PC1 (", round(res_pca$eig[1, 2], 1), "%)")) +
+  ylab(paste0("PC2 (", round(res_pca$eig[2, 2], 1), "%)")) +
   ggtitle("PCA Combined Regions") +
   scale_x_continuous(limits = c(-20, 30)) +
   scale_y_continuous(limits = c(-20, 20))
@@ -1083,8 +1162,8 @@ result <- calc_plot_dvm_st(
 
 #########################PCs~WMD&DVM FOR Each Region####################
 # Extract the loadings (contributions) of morphological variables on each PC
-# Assuming 'res.pca' is the result from your PCA analysis
-loadings <- as.data.frame(res.pca$var$coord[, 1:5])  # Extract loadings for PC1 to PC10
+# Assuming 'res_pca' is the result from your PCA analysis
+loadings <- as.data.frame(res_pca$var$coord[, 1:5])  # Extract loadings for PC1 to PC10
 
 # Optionally, rename the columns for clarity
 colnames(loadings) <- paste0("PC", 1:5)
@@ -1114,13 +1193,13 @@ ggplot(loadings_long, aes(x = variable, y = Variable, fill = value)) +
 breaks_pc1 <- 50  # Specify the number of bins for PC1
 breaks_pc2 <- 50  # Specify the number of bins for PC2
 
-Cop_data$PC1<-res.pca$ind$coord[, 1]
-Cop_data$PC2<-res.pca$ind$coord[, 2]
+Cop_data$PC1<-res_pca$ind$coord[, 1]
+Cop_data$PC2<-res_pca$ind$coord[, 2]
 Cop_data$logPC1<-log10(Cop_data$PC1)
 Cop_data$logPC2<-log10(Cop_data$PC2)
-Cop_data$PC3<-res.pca$ind$coord[, 3]
-Cop_data$PC4<-res.pca$ind$coord[, 4]
-Cop_data$PC5<-res.pca$ind$coord[, 5]
+Cop_data$PC3<-res_pca$ind$coord[, 3]
+Cop_data$PC4<-res_pca$ind$coord[, 4]
+Cop_data$PC5<-res_pca$ind$coord[, 5]
 Cop_data$logPC3<-log10(Cop_data$PC3)
 Cop_data$logPC4<-log10(Cop_data$PC4)
 Cop_data$logPC5<-log10(Cop_data$PC5)
@@ -1774,6 +1853,3 @@ for(r in regions) {
   #height = 8
   #)
 }
-
-
-
